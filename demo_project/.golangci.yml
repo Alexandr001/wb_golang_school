@@ -1,0 +1,51 @@
+version: "2"
+
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose      # незакрытый resp.Body
+    - contextcheck   # потерянный context
+    - errorlint      # %w вместо %v, errors.Is/As
+    - gocritic
+    - goconst
+    - gosec
+    - nilerr
+    - noctx          # HTTP-запросы без context
+    - revive
+    - rowserrcheck   # необработанная rows.Err()
+    - sqlclosecheck
+    - unconvert
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # читаемость структур конфига важнее пары байт
+    revive:
+      rules:
+        - name: exported
+          disabled: true # доктор-комментарии на каждый экспорт для демо-сервиса избыточны
+    gosec:
+      excludes:
+        - G104 # дублирует errcheck
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Alexandr001/wb_golang_school/demo_project

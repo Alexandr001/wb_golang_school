@@ -1,0 +1,186 @@
+name: orders
+
+# Значения ${...} берутся из .env (cp .env.example .env). Внутри compose адреса
+# зависимостей другие, чем при локальном запуске, поэтому POSTGRES_HOST и
+# KAFKA_BROKERS здесь заданы явно и .env-овские значения не используются.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # Суперюзер нужен только для инициализации контейнера. Приложение под ним
+      # не ходит — init-скрипт заводит отдельную непривилегированную роль.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-orders_db}
+
+      # Слева — имена, которые ждёт db/init/01-app-user.sh; справа — учётка
+      # приложения из .env. Имена разные намеренно: POSTGRES_USER внутри этого
+      # контейнера уже занят суперюзером.
+      APP_DB_USER: ${POSTGRES_USER:-orders_app}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:-orders_app_pwd}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init-скрипты выполняются ТОЛЬКО на пустом томе: после их правки нужен
+      # `make reset` (docker compose down -v), иначе изменения не применятся.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Наружу — чтобы можно было заглянуть psql'ом с хоста.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # Именно через TCP (-h), а не через unix-сокет: на время выполнения
+      # init-скриптов entrypoint поднимает временный сервер без TCP-листенера.
+      # Проверка через сокет сказала бы «готов» до создания роли приложения.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${POSTGRES_DB:-orders_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:4.1.2
+    environment:
+      # KRaft: один узел совмещает роли брокера и контроллера — ZooKeeper не нужен.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      # Два listener'а — классическая грабля advertised.listeners: изнутри compose
+      # брокер доступен как kafka:9092, с хоста — как localhost:29092. Один общий
+      # адрес не подошёл бы ни там, ни там.
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+
+      # Кластер из одного узла: реплицировать не на кого.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Без задержки ребаланса consumer подхватывает партиции сразу, а не через 3 с.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+    ports:
+      - "29092:29092"
+    healthcheck:
+      # Поднимает JVM на каждую проверку, поэтому интервал большой.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    # Именованный том для журнала Kafka не подключён сознательно. Долговечность
+    # заказов обеспечивает PostgreSQL, а не топик: оффсет коммитится только после
+    # COMMIT в БД, поэтому потеря журнала не теряет данные. Топик и оффсеты живут
+    # в контейнере и переживают stop/start, теряются только при пересоздании.
+    # Прежде чем добавлять том, нужно свериться с правами на каталог данных
+    # внутри образа: брокер работает не под root, а свежий том создаётся root'ом.
+
+  # Одноразовая задача: создаёт топик и кладёт в него эталонный заказ из ТЗ,
+  # чтобы после `make up` сервису было что отдавать — без ручных команд.
+  kafka-init:
+    image: apache/kafka:4.1.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      # Тот же файл, что и эталон в репозитории: демо-данные и образец модели
+      # не разъезжаются, потому что это буквально один файл.
+      - ./testdata/model.json:/seed/model.json:ro
+    # entrypoint переопределён явно: иначе аргументы ушли бы в ENTRYPOINT образа
+    # (если он там есть) и вместо инициализации контейнер попытался бы поднять
+    # брокер. С явным entrypoint поведение одинаково при любом варианте образа.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+
+        # Топик создаём явно, потому что auto-create отключён: с ним первое
+        # обращение завело бы топик с дефолтным числом партиций и молча
+        # разошлось с этой настройкой.
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic ${KAFKA_TOPIC:-orders} --partitions 3 --replication-factor 1
+
+        if [ ! -f /seed/model.json ]; then
+          echo "seed: /seed/model.json not found, nothing to publish"
+          exit 0
+        fi
+
+        # Консольный продюсер режет stdin по строкам, а model.json отформатирован
+        # в несколько строк: без сворачивания в одну получился бы десяток битых
+        # сообщений вместо одного заказа. Завершающий перевод строки обязателен —
+        # по нему продюсер понимает, что запись закончилась.
+        { tr -d '\r\n' < /seed/model.json; echo; } | \
+          /opt/kafka/bin/kafka-console-producer.sh \
+            --bootstrap-server kafka:9092 --topic ${KAFKA_TOPIC:-orders}
+
+        echo "seed: demo order published to topic ${KAFKA_TOPIC:-orders}"
+    # Одноразовая задача: отработала и вышла, перезапускать не нужно.
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        # Ждём именно завершения: пока топик не создан, consumer'у нечего читать.
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: ${APP_ENV:-docker}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15s}
+
+      HTTP_ADDR: ":8081"
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-10s}
+      HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-15s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+      HTTP_HANDLER_TIMEOUT: ${HTTP_HANDLER_TIMEOUT:-5s}
+
+      # Имена сервисов compose, а не localhost из .env.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-orders_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orders_app_pwd}
+      POSTGRES_DB: ${POSTGRES_DB:-orders_db}
+      POSTGRES_SSLMODE: disable
+      POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-10}
+      POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-2}
+      POSTGRES_CONNECT_TIMEOUT: ${POSTGRES_CONNECT_TIMEOUT:-5s}
+      POSTGRES_CONNECT_ATTEMPTS: ${POSTGRES_CONNECT_ATTEMPTS:-10}
+      POSTGRES_CONNECT_BACKOFF: ${POSTGRES_CONNECT_BACKOFF:-1s}
+
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-orders}
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-orders-service}
+      KAFKA_MIN_BYTES: ${KAFKA_MIN_BYTES:-1}
+      KAFKA_MAX_BYTES: ${KAFKA_MAX_BYTES:-10485760}
+      KAFKA_MAX_WAIT: ${KAFKA_MAX_WAIT:-500ms}
+      KAFKA_MAX_ATTEMPTS: ${KAFKA_MAX_ATTEMPTS:-5}
+      KAFKA_RETRY_BACKOFF: ${KAFKA_RETRY_BACKOFF:-500ms}
+
+      CACHE_CAPACITY: ${CACHE_CAPACITY:-10000}
+      CACHE_WARMUP_LIMIT: ${CACHE_WARMUP_LIMIT:-0}
+    ports:
+      # Порт зафиксирован ТЗ.
+      - "8081:8081"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # healthcheck'а нет намеренно: в distroless нет ни shell'а, ни curl'а,
+    # а от сервиса никто не зависит по depends_on. Готовность видна на /readyz.
+
+volumes:
+  pgdata:

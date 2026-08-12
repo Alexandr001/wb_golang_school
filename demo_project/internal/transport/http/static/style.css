@@ -1,0 +1,202 @@
+:root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --border: #e1e4e8;
+    --text: #1c2024;
+    --muted: #6b7280;
+    --accent: #7c3aed;
+    --hit: #16794c;
+    --miss: #b45309;
+    --error: #b42318;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 32px 16px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.page {
+    max-width: 960px;
+    margin: 0 auto;
+}
+
+.page__header h1 {
+    margin: 0 0 4px;
+    font-size: 24px;
+}
+
+.hint {
+    margin: 0 0 20px;
+    color: var(--muted);
+}
+
+code {
+    background: #eceef1;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 13px;
+}
+
+.search {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.search__input {
+    flex: 1 1 320px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+    font-size: 15px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.search__input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.search button {
+    padding: 10px 18px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.search__button {
+    background: var(--accent);
+    color: #fff;
+}
+
+.search__button:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
+.search__sample {
+    background: var(--card);
+    border-color: var(--border);
+    color: var(--text);
+}
+
+.status {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #fdeceb;
+    color: var(--error);
+    border: 1px solid #f6cfcb;
+}
+
+.status--info {
+    background: #eef2ff;
+    color: #3730a3;
+    border-color: #dbe1fe;
+}
+
+.meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+}
+
+.badge--hit {
+    background: #dcfce7;
+    color: var(--hit);
+}
+
+.badge--miss {
+    background: #fef3c7;
+    color: var(--miss);
+}
+
+.card {
+    margin-bottom: 16px;
+    padding: 16px 18px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+.card h2 {
+    margin: 0 0 12px;
+    font-size: 16px;
+}
+
+.card__count {
+    color: var(--muted);
+    font-weight: 400;
+}
+
+.fields {
+    display: grid;
+    grid-template-columns: minmax(140px, max-content) 1fr;
+    gap: 6px 20px;
+    margin: 0;
+}
+
+.fields dt {
+    color: var(--muted);
+}
+
+.fields dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.table-scroll {
+    overflow-x: auto;
+}
+
+.items {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.items th,
+.items td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.items th {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.items tr:last-child td {
+    border-bottom: none;
+}
+
+.items .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
